@@ -2,6 +2,6 @@
 
 OCR parser for account statements.
 
-(c) 2023 by David Madl <git@abanbytes.eu>
+(c) 2023 by David Madl.
 
 Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
