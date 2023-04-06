@@ -85,7 +85,7 @@ def segment_letters_1(cfg, dn):
     """
 
     #
-    # pre-filtering
+    # pre-filtering (visual filters)
     #
     
     # create kernel for vertically wide clustering of pixels ('i', '!', '?', ...)
@@ -100,24 +100,37 @@ def segment_letters_1(cfg, dn):
     #
     # detect connected components
     #
-    nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(u, connectivity=8)
-    return (nb_components, output, stats, centroids)
+    nb_components_p, outputs_p, stats_p, centroids_p = cv2.connectedComponentsWithStats(u, connectivity=8)
+
+    #
+    # post-filtering (select only plausible shapes)
+    #
+
+    # keep only characters, skip too large area symbols (image?)
+    w_max, h_max = int(cfg['ligature_max_width'] * cfg['font_size']), int(cfg['largecap_max_size'] * cfg['font_size'])
+    w_min, h_min = int(cfg['min_width'] * cfg['font_size']), int(min(cfg['punct_min_size'], cfg['smallcap_min_size']) * cfg['font_size'])
+
+    outputs, stats, centroids = [], [], []
+    for i, output, stat, centroid in zip(range(nb_components_p), outputs_p, stats_p, centroids_p):
+        if i == 0: continue  # skip background
+        x0, y0, w, h, net_area = stat
+        if w > w_max or h > h_max: continue  # skip too large area symbols (image?)
+        if w < w_min or h < h_min: continue  # skip too small area symbols (noise?)
+        outputs.append(output)
+        stats.append(stat)
+        centroids.append(centroid)
+    nb_components = len(outputs)
+
+    return (nb_components, outputs, stats, centroids)
 
 
 def vizz_segmentation(cfg, img, nb_components, output, stats, centroids):
     img_out = img.copy()
     c = np.array([255, 0, 0])  # red boxes
 
-    # cf. segment_letters_2()
-    w_max, h_max = int(cfg['ligature_max_width'] * cfg['font_size']), int(cfg['largecap_max_size'] * cfg['font_size'])
-    w_min, h_min = int(cfg['min_width'] * cfg['font_size']), int(min(cfg['punct_min_size'], cfg['smallcap_min_size']) * cfg['font_size'])
-
     letters = []
     for i, stat in zip(range(nb_components), stats):
-        if i == 0: continue  # skip background
         x0, y0, w, h, net_area = stat
-        if w > w_max or h > h_max: continue  # skip too large area symbols (image?)
-        if w < w_min or h < h_min: continue  # skip too small area symbols (noise?)
     
         x1, y1 = x0 + w - 1, y0 + h - 1
         img_out[y0, x0:x1] = c
@@ -128,7 +141,7 @@ def vizz_segmentation(cfg, img, nb_components, output, stats, centroids):
     return img_out
 
 
-def segment_letters_2(cfg, nb_components, output, stats, centroids):
+def segment_letters_2(cfg, dn, nb_components, output, stats, centroids):
     """
     Collect standardized images of actual letters in an image.
     """
@@ -137,21 +150,11 @@ def segment_letters_2(cfg, nb_components, output, stats, centroids):
     # unpack letters
     #
 
-    # assert stats idx [0] is the background
-    assert stats[0][0] == 0 and stats[0][1] == 0
-    assert stats[0][2] == dn.shape[1] and stats[0][3] == dn.shape[0]
-
-    # keep only characters, skip too large area symbols (image?)
-    w_max, h_max = int(cfg['ligature_max_width'] * cfg['font_size']), int(cfg['largecap_max_size'] * cfg['font_size'])
-    w_min, h_min = int(cfg['min_width'] * cfg['font_size']), int(min(cfg['punct_min_size'], cfg['smallcap_min_size']) * cfg['font_size'])
-
     letters = []
     for i, stat in zip(range(nb_components), stats):
-        if i == 0: continue  # skip background
         x0, y0, w, h, net_area = stat
-        if w > w_max or h > h_max: continue  # skip too large area symbols (image?)
-        if w < w_min or h < h_min: continue  # skip too small area symbols (noise?)
-        letters.append(dn[y0:(y0+h), x0:(x0+w)])
+        x1, y1 = x0 + w - 1, y0 + h - 1
+        letters.append(dn[y0:y1, x0:x1])
     
     #
     # standardize letters to the same size
@@ -200,16 +203,10 @@ def line_letter_stats(cfg, height, nb_components, stats):
     """
     line_letter_freq = np.zeros(height, dtype=np.int64)
 
-    w_max, h_max = int(cfg['ligature_max_width'] * cfg['font_size']), int(cfg['largecap_max_size'] * cfg['font_size'])
-    w_min, h_min = int(cfg['min_width'] * cfg['font_size']), int(min(cfg['punct_min_size'], cfg['smallcap_min_size']) * cfg['font_size'])
-
     for i, stat in zip(range(nb_components), stats):
-        if i == 0: continue  # skip background
         x0, y0, w, h, net_area = stat
-        if w > w_max or h > h_max: continue  # skip too large area symbols (image?)
-        if w < w_min or h < h_min: continue  # skip too small area symbols (noise?)
-        
         x1, y1 = x0 + w - 1, y0 + h - 1
+        
         for j in range(y0, y1+1):
             line_letter_freq[j] += 1
 
@@ -260,12 +257,23 @@ def line_detector(cfg, line_letter_freq):
     return line_bases
 
 
-def vizz_lines(cfg, img, line_bases):
+def vizz_lines(cfg, img, line_bases, c=None):
     img_out = img.copy()
-    c = np.array([0, 255, 0])  # green boxes
+    if c is None:
+        c = np.array([0, 255, 0])  # green boxes
 
     i_bases = np.where(line_bases)[0]
     for i in i_bases:
         img_out[i, :] = c
 
     return img_out
+
+
+def dirac(n, idxs, dtype=np.dtype('bool')):
+    """Create a one-hot array with idxs set as 1."""
+    a = np.zeros(n, dtype=dtype)
+    for i in idxs:
+        if i >= 0 and i < a.shape[0]:
+            a[i] = 1
+    return a
+
