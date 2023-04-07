@@ -1,5 +1,7 @@
 import numpy as np
 import cv2
+from bisect import bisect_left
+from collections import defaultdict
 
 
 def pad_image(img, pad_size):
@@ -18,6 +20,13 @@ def int_odd(n):
     i = int(n)
     if i % 2 == 0: i += 1
     return i
+
+
+def is_overlap(ax0, ax1, bx0, bx1):
+    """Checks if two spans `ax0:ax1` and `bx0:bx1` overlap."""
+    assert ax1 > ax0
+    assert bx1 > bx0
+    return (ax0 <= bx0 < ax1) or (ax0 <= bx1 < ax1) or (bx0 <= ax0 < bx1) or (bx0 <= ax1 < bx1)
 
 
 def normalize(a):
@@ -124,9 +133,10 @@ def segment_letters_1(cfg, dn):
     return (nb_components, outputs, stats, centroids)
 
 
-def vizz_segmentation(cfg, img, nb_components, output, stats, centroids):
+def vizz_segmentation(cfg, img, nb_components, output, stats, centroids, c=None):
     img_out = img.copy()
-    c = np.array([255, 0, 0])  # red boxes
+    if c is None:
+        c = np.array([255, 0, 0])  # red boxes
 
     letters = []
     for i, stat in zip(range(nb_components), stats):
@@ -206,7 +216,7 @@ def line_letter_stats(cfg, height, nb_components, stats):
     for i, stat in zip(range(nb_components), stats):
         x0, y0, w, h, net_area = stat
         x1, y1 = x0 + w - 1, y0 + h - 1
-        
+
         for j in range(y0, y1+1):
             line_letter_freq[j] += 1
 
@@ -220,6 +230,7 @@ def conv_padded(f, krn):
     return c[(krn.shape[0]):(krn.shape[0]+f.shape[0])]
 
 
+# todo: refactor: def detect_lines()
 def line_detector(cfg, line_letter_freq):
     """
     Detect vertical text line base positions.
@@ -258,6 +269,7 @@ def line_detector(cfg, line_letter_freq):
 
 
 def vizz_lines(cfg, img, line_bases, c=None):
+    """:param line_bases: one-hot vector."""
     img_out = img.copy()
     if c is None:
         c = np.array([0, 255, 0])  # green boxes
@@ -265,6 +277,30 @@ def vizz_lines(cfg, img, line_bases, c=None):
     i_bases = np.where(line_bases)[0]
     for i in i_bases:
         img_out[i, :] = c
+
+    return img_out
+
+
+def vizz_lines_2(cfg, img, line_bases, c_base=None, c_bounds=None):
+    """:param line_bases: list of `LineBase()` instances."""
+    img_out = img.copy()
+    if c_base is None:
+        c_base = np.array([0, 255, 0])  # green lines for line bases
+    if c_bounds is None:
+        c_bounds = np.array([0, 0, 255])  # blue lines for bounds
+
+    y_bases = [lb.y for lb in line_bases]
+    y_top_mins = [lb.y_top_min for lb in line_bases]
+    y_bot_maxs = [lb.y_bot_max for lb in line_bases]
+
+    for y in y_bases:
+        img_out[y, :] = c_base
+    for y in y_top_mins:
+        if y < 0 or y >= img_out.shape[0]: continue
+        img_out[y, :] = c_bounds
+    for y in y_bot_maxs:
+        if y < 0 or y >= img_out.shape[0]: continue
+        img_out[y, :] = c_bounds
 
     return img_out
 
@@ -277,3 +313,133 @@ def dirac(n, idxs, dtype=np.dtype('bool')):
             a[i] = 1
     return a
 
+
+class LineBase:
+    """Describes the location of a single text line on the page."""
+    # this could be extended to carry horizontal range information, too (~ bounding box)
+    def __init__(self, y, y_top_min, y_bot_max):
+        """
+        :param y: line base position (coordinate just below regular small caps like 'a', 'e'.)
+        :param y_top_min: line bounding-box top (may be negative)
+        :param y_bot_max: line bounding-box bottom (may be larger than page size)
+        """
+        # note that "line bounding-box" defines a box in which to search for letter bounding-boxes.
+        # this is relatively tight, and not all letters are expected to fit pixel-perfect into it.
+        self.y = y
+        self.y_top_min = y_top_min
+        self.y_bot_max = y_bot_max
+
+
+def detect_line_bases(cfg, dn, nb_components, stats):
+    """
+    Find text lines on the page. Assumes that lines span the entire page width.
+    """
+
+    # find text lines based on letter position stats
+    line_letter_freq = line_letter_stats(cfg, dn.shape[0], nb_components, stats)
+    line_y_bases = line_detector(cfg, line_letter_freq)  # one-hot vector
+
+    # - compute letter bounds (currently unused)
+    # - remove unreasonably tight lines
+
+    line_yy_p = np.array([0] + list(np.where(line_y_bases)[0]) + [dn.shape[0]-1])
+    line_yy = []
+    line_bases = []
+    bounds_yy = []
+    for i_line in range(line_yy_p.shape[0]-1):
+        y0, y1 = line_yy_p[i_line:i_line+2]
+        #y_top_min = y0 + int(cfg['let_bottom_overlap'] * cfg['font_size'])
+        y_top_min = y1 - int(cfg['font_size'] * (cfg['line_spacing'] - cfg['sep_bottom_margin']))
+        #y_top_min = y0 + int((cfg['line_spacing'] - 1.0) * cfg['font_size'])  # note: very similar, but we need +2 px or sth
+        y_bot_max = y1 + int((cfg['line_spacing'] - 1.0) * 1.1 * cfg['font_size'])
+        
+        # filter away lines with spacing unreasonably small, i.e. (y1-y0) < thr
+        if (y1 - y0) < int(cfg['font_size'] * (cfg['line_spacing'] - cfg['sep_bottom_margin'])):
+            continue
+        
+        line_yy.append(y1)
+        bounds_yy.append(y_top_min)
+        bounds_yy.append(y_bot_max)
+        line_bases.append(LineBase(y1, y_top_min, y_bot_max))
+
+    return line_bases
+
+
+def assign_segments(line_bases, nb_components, stats, centroids):
+    """
+    Divide segments between individual text lines.
+    """
+
+    #
+    # assign shapes to lines
+    #
+
+    line_stat_idxs = defaultdict(list)
+    line_stats = defaultdict(list)
+
+    line_yy = [lb.y for lb in line_bases]
+
+    # in: line_yy, (nb_combonents, stats, centroids)
+    # assert line_yy is ascending array of indices of lines
+    for i, stat, centroid in zip(range(nb_components), stats, centroids):
+        x0, y0, w, h, net_area = stat
+        x1, y1 = x0 + w - 1, y0 + h - 1
+        # decide which line the centroid belongs to
+        i_line = bisect_left(line_yy, centroid[1])
+        
+        line_stat_idxs[line_yy[i_line]] += [i]
+        line_stats[line_yy[i_line]] += [stat]
+        
+        # nb_components, output, stats, centroids
+
+    return line_stat_idxs, line_stats
+
+
+def merge_segments(stats):
+    """
+    Merge segments of a text line into letters. Merges individual segments of vertically divided letters like 'i', ':' into a single bounding box.
+    `stats` must be from a single text line, because `y` coordinates are currently ignored.
+    """
+    ls = stats
+
+    # compute local merge incidence matrix,
+    # based on x-coord overlaps
+    a_merge = np.zeros((len(ls), len(ls)), dtype=bool)
+    for i, a_stat in zip(range(len(ls)), ls):
+        ax0, _, aw, _, _ = a_stat
+        ax1 = ax0 + aw - 1
+        for j, b_stat in zip(range(len(ls)), ls):
+            bx0, _, bw, _, _ = b_stat
+            bx1 = bx0 + bw - 1
+            a_merge[i,j] = is_overlap(ax0, ax1, bx0, bx1)
+
+    # detect and number individual letters (coherent segments)
+    components = number_matrix(a_merge)
+    
+    line_connected_stats = []
+    
+    # connect segments
+    used = np.zeros(len(ls), dtype=bool)
+    for i in range(len(ls)):
+        if used[i] == 1: continue
+        i_comp = np.where(components == components[i])[0]
+        if len(i_comp) == 0: continue
+    
+        x0s, x1s, y0s, y1s, aa = [], [], [], [], []
+        for j in i_comp:
+            x0, y0, w, h, net_area = ls[j]
+            x0s.append(x0)
+            x1s.append(x0 + w - 1)
+            y0s.append(y0)
+            y1s.append(y0 + h - 1)
+            aa.append(net_area)
+            used[j] = 1
+
+        # compute new bounding rect
+        x1, y1 = np.max(x1s), np.max(y1s)
+        net_area = np.sum(aa)
+        x0, y0 = np.min(x0s), np.min(y0s)
+        w, h = (x1 - x0 + 1), (y1 - y0 + 1)
+        line_connected_stats.append((x0, y0, w, h, net_area))
+    
+    return line_connected_stats
