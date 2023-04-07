@@ -117,7 +117,9 @@ def segment_letters_1(cfg, dn):
 
     # keep only characters, skip too large area symbols (image?)
     w_max, h_max = int(cfg['ligature_max_width'] * cfg['font_size']), int(cfg['largecap_max_size'] * cfg['font_size'])
-    w_min, h_min = int(cfg['min_width'] * cfg['font_size']), int(min(cfg['punct_min_size'], cfg['smallcap_min_size']) * cfg['font_size'])
+    min_width = cfg['font_weight']  # minimum letter width, relative to font size (0.0 - 1.0)
+    punct_min_size = cfg['font_weight']  # minimum punctuation height, relative to font size (0.0 - 1.0)
+    w_min, h_min = int(min_width * cfg['font_size']), int(min(punct_min_size, cfg['smallcap_min_size']) * cfg['font_size'])
 
     outputs, stats, centroids = [], [], []
     for i, output, stat, centroid in zip(range(nb_components_p), outputs_p, stats_p, centroids_p):
