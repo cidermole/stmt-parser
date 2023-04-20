@@ -5,6 +5,11 @@ from collections import defaultdict
 import scipy.signal
 
 
+#
+# Generic image-processing helpers
+#
+
+
 def pad_image(img, pad_size):
     """Pad 8-bit RGB image on all sides with pad_size white pixels."""
     out = np.zeros((img.shape[0] + 2*pad_size, img.shape[1] + 2*pad_size, 3), dtype=img.dtype)
@@ -58,6 +63,22 @@ def remove_median_bg(cfg, a):
     #dn = normalize(rn - mn)
     dn = np.clip(rn - mn, -1.0, 0) + 1.0
     return dn
+
+'''
+# 1D
+def dirac(n, idxs, dtype=np.dtype('bool')):
+    """Create a one-hot array with idxs set as 1."""
+    a = np.zeros(n, dtype=dtype)
+    for i in idxs:
+        if i >= 0 and i < a.shape[0]:
+            a[i] = 1
+    return a
+'''
+
+
+#
+# Char Tools
+#
 
 
 def letter_and_mask(l, w_max, h_max):
@@ -308,15 +329,6 @@ def vizz_lines_2(cfg, img, line_bases, c_base=None, c_bounds=None):
     return img_out
 
 
-def dirac(n, idxs, dtype=np.dtype('bool')):
-    """Create a one-hot array with idxs set as 1."""
-    a = np.zeros(n, dtype=dtype)
-    for i in idxs:
-        if i >= 0 and i < a.shape[0]:
-            a[i] = 1
-    return a
-
-
 class LineBase:
     """Describes the location of a single text line on the page."""
     # this could be extended to carry horizontal range information, too (~ bounding box)
@@ -448,6 +460,11 @@ def merge_segments(stats):
     return line_connected_stats
 
 
+#
+# Page Tools
+#
+
+
 def detect_pages(cfg, dn):
     """Detect pages based on dashed lines, with vertical white padding (font size).
     :returns: list of tuples of y-ranges of pages, e.g. [(0,1180),(1180,2400) ...]"""
@@ -479,6 +496,9 @@ def detect_pages(cfg, dn):
 
 
 def detect_table_headers(cfg, dn):
+    """Detect vertical table header separators, based on dotted dense stripe.
+    Positions are somewhat rough, but should fall into the vertical range of individual letters on the header line.
+    """
     # define kernel to detect table headers:
     # dotted dense stripe, with height around 'font_size'.
     fs_hdr = int(cfg['font_size'])  # approx. header font size
