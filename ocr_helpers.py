@@ -452,23 +452,6 @@ def detect_pages(cfg, dn):
     """Detect pages based on dashed lines, with vertical white padding (font size).
     :returns: list of tuples of y-ranges of pages, e.g. [(0,1180),(1180,2400) ...]"""
 
-    # dashed line idea: transition count detector
-    # 1. clip to b/w
-    # 2. convolve [1,-1], [-1,1], and threshold with 2
-    # 3. sum to count transitions
-
-    # threshold greyscale into binary image
-    th = 0.5
-    _, t = cv2.threshold(dn, th, 1.0, cv2.THRESH_BINARY)
-    u = 1 - t.astype(np.int8)
-
-    # edge detect
-    k1, k2 = np.array([[-1,1]]), np.array([[1,-1]])
-    t1 = np.clip(scipy.signal.convolve(up, k1, mode='same'), a_min=0, a_max=1).astype('uint8')
-    #t2 = np.clip(scipy.signal.convolve(up, k2, mode='same'), a_min=0, a_max=1).astype('uint8')
-    t1s = np.sum(t1, axis=1) / t1.shape[1]
-    #t2s = np.sum(t2, axis=1) / t2.shape[1]
-
     # define kernel to detect dashed line:
     # two or three pixels wide vertically.
     # white space around, up to font_size.
@@ -482,16 +465,59 @@ def detect_pages(cfg, dn):
     k3[(fs+lwt//2):(fs+lwt//2+lw)] = 1.0/ampl  # ... to reach norm 1.0
     k3[fs:(fs+lwt//2)] = 0
     k3[-(fs+lwt//2):-fs] = 0
-    
-    # t1 transitions amplitude
-    t1tsa = np.clip(scipy.signal.convolve(t1s, k3), a_min=0, a_max=1) > 0.9
-    # t1 transition detection
-    t1ts = np.clip(scipy.signal.convolve(t1tsa*2 - 1, np.array([-1,1])), a_min=0, a_max=1)
-    t1ts[0] = 0 # fix edge glitch
 
-    idxs = [0] + list(np.where(t1ts)[0]) + [dn.shape[0]]
+    # apply kernel to transition counts
+    idxs = detect_vertical_sep(cfg, dn, k3)
+
+    # convert into y-ranges
+    idxs = [0] + list(idxs) + [dn.shape[0]]
     res = []
     for i in range(len(idxs)-1):
         res.append((idxs[i], idxs[i+1]))
 
     return res
+
+
+def detect_table_headers(cfg, dn):
+    # define kernel to detect table headers:
+    # dotted dense stripe, with height around 'font_size'.
+    fs_hdr = int(cfg['font_size'])  # approx. header font size
+    ampl_h = 0.1  # min detection amplitude (density of dash transitions, horizontally)
+    ampl_v = 0.5  # min detection amplitude (density of dots, vertically)
+    k3x = np.ones(fs_hdr) / (ampl_h * ampl_v * fs_hdr)
+
+    # apply kernel to transition counts
+    idxs = detect_vertical_sep(cfg, dn, k3x)
+    return idxs
+
+
+def detect_vertical_sep(cfg, dn, k3):
+    """Detect vertical separators (pages, table headings) based on line shading.
+    :returns: list of y bottom coordinates, e.g. [1180, 2400...]"""
+
+    # dashed line idea: transition count detector
+    # 1. clip to b/w
+    # 2. convolve [1,-1], [-1,1], and threshold with 2
+    # 3. sum to count transitions
+
+    # threshold greyscale into binary image
+    th = 0.5
+    _, t = cv2.threshold(dn, th, 1.0, cv2.THRESH_BINARY)
+    u = 1 - t.astype(np.int8)
+
+    # edge detect
+    k1, k2 = np.array([[-1,1]]), np.array([[1,-1]])
+    up = u*2 - 1
+    t1 = np.clip(scipy.signal.convolve(up, k1, mode='same'), a_min=0, a_max=1).astype('uint8')
+    #t2 = np.clip(scipy.signal.convolve(up, k2, mode='same'), a_min=0, a_max=1).astype('uint8')
+    t1s = np.sum(t1, axis=1) / t1.shape[1]
+    #t2s = np.sum(t2, axis=1) / t2.shape[1]
+
+    # t1 transitions amplitude
+    t1tsa = np.clip(scipy.signal.convolve(t1s, k3), a_min=0, a_max=1) > 0.9
+    # t1 transition detection (geared towards finding falling edge = line base)
+    t1ts = np.clip(scipy.signal.convolve(t1tsa*2 - 1, np.array([1,-1])), a_min=0, a_max=1)
+    t1ts[0] = 0 # fix edge glitches
+    t1ts[-1] = 0
+
+    return np.where(t1ts)[0]
